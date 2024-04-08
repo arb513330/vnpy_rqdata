@@ -1,5 +1,5 @@
 from datetime import datetime, timedelta, time
-from typing import Dict, List, Set, Optional, Callable
+from typing import Optional, Callable
 
 from numpy import ndarray
 from pandas import DataFrame
@@ -17,19 +17,19 @@ from vnpy.trader.utility import round_to, ZoneInfo
 from vnpy.trader.datafeed import BaseDatafeed
 
 
-INTERVAL_VT2RQ: Dict[Interval, str] = {
+INTERVAL_VT2RQ: dict[Interval, str] = {
     Interval.MINUTE: "1m",
     Interval.HOUR: "60m",
     Interval.DAILY: "1d",
 }
 
-INTERVAL_ADJUSTMENT_MAP: Dict[Interval, timedelta] = {
+INTERVAL_ADJUSTMENT_MAP: dict[Interval, timedelta] = {
     Interval.MINUTE: timedelta(minutes=1),
     Interval.HOUR: timedelta(hours=1),
     Interval.DAILY: timedelta(),  # no need to adjust for daily bar
 }
 
-FUTURES_EXCHANGES: Set[Exchange] = {
+FUTURES_EXCHANGES: set[Exchange] = {
     Exchange.CFFEX,
     Exchange.SHFE,
     Exchange.CZCE,
@@ -157,7 +157,7 @@ class RqdataDatafeed(BaseDatafeed):
         self.inited = True
         return True
 
-    def query_bar_history(self, req: HistoryRequest, output: Callable = print) -> Optional[List[BarData]]:
+    def query_bar_history(self, req: HistoryRequest, output: Callable = print) -> Optional[list[BarData]]:
         """查询K线数据"""
         # 期货品种且代码中没有数字（非具体合约），则查询主力连续
         if req.exchange in FUTURES_EXCHANGES and req.symbol.isalpha():
@@ -165,7 +165,7 @@ class RqdataDatafeed(BaseDatafeed):
         else:
             return self._query_bar_history(req, output)
 
-    def _query_bar_history(self, req: HistoryRequest, output: Callable = print) -> Optional[List[BarData]]:
+    def _query_bar_history(self, req: HistoryRequest, output: Callable = print) -> Optional[list[BarData]]:
         """查询K线数据"""
         if not self.inited:
             n: bool = self.init(output)
@@ -217,7 +217,7 @@ class RqdataDatafeed(BaseDatafeed):
             rq_symbol, frequency=rq_interval, fields=fields, start_date=start, end_date=query_end, adjust_type="none"
         )
 
-        data: List[BarData] = []
+        data: list[BarData] = []
 
         if df is not None and not df.empty:
             df = df.loc[rq_symbol]
@@ -248,7 +248,7 @@ class RqdataDatafeed(BaseDatafeed):
 
         return data
 
-    def query_tick_history(self, req: HistoryRequest, output: Callable = print) -> Optional[List[TickData]]:
+    def query_tick_history(self, req: HistoryRequest, output: Callable = print) -> Optional[list[TickData]]:
         """查询Tick数据"""
         if not self.inited:
             n: bool = self.init(output)
@@ -269,9 +269,6 @@ class RqdataDatafeed(BaseDatafeed):
         if rq_symbol not in self.symbols:
             output(f"RQData查询Tick数据失败：不支持的合约代码{req.vt_symbol}")
             return []
-
-        # 为了查询夜盘数据
-        end += timedelta(1)
 
         # 只对衍生品合约才查询持仓量数据
         fields: list = [
@@ -309,10 +306,15 @@ class RqdataDatafeed(BaseDatafeed):
             fields.append("open_interest")
 
         df: DataFrame = get_price(
-            rq_symbol, frequency="tick", fields=fields, start_date=start, end_date=end, adjust_type="none"
+            rq_symbol,
+            frequency="tick",
+            fields=fields,
+            start_date=start,
+            end_date=get_next_trading_date(end),  # 为了查询夜盘数据
+            adjust_type="none",
         )
 
-        data: List[TickData] = []
+        data: list[TickData] = []
 
         if df is not None:
             # 填充NaN为0
@@ -363,7 +365,7 @@ class RqdataDatafeed(BaseDatafeed):
 
         return data
 
-    def _query_dominant_history(self, req: HistoryRequest, output: Callable = print) -> Optional[List[BarData]]:
+    def _query_dominant_history(self, req: HistoryRequest, output: Callable = print) -> Optional[list[BarData]]:
         """查询期货主力K线数据"""
         if not self.inited:
             n: bool = self.init(output)
@@ -384,9 +386,6 @@ class RqdataDatafeed(BaseDatafeed):
         # 为了将米筐时间戳（K线结束时点）转换为VeighNa时间戳（K线开始时点）
         adjustment: timedelta = INTERVAL_ADJUSTMENT_MAP[interval]
 
-        # 为了查询夜盘数据
-        end += timedelta(1)
-
         # 只对衍生品合约才查询持仓量数据
         fields: list = ["open", "high", "low", "close", "volume", "total_turnover"]
         if not symbol.isdigit():
@@ -397,12 +396,12 @@ class RqdataDatafeed(BaseDatafeed):
             frequency=rq_interval,
             fields=fields,
             start_date=start,
-            end_date=end,
+            end_date=get_next_trading_date(end),  # 为了查询夜盘数据
             adjust_type="pre",  # 前复权
             adjust_method="prev_close_ratio",  # 切换前一日收盘价比例复权
         )
 
-        data: List[BarData] = []
+        data: list[BarData] = []
 
         if df is not None:
             # 填充NaN为0
@@ -411,6 +410,9 @@ class RqdataDatafeed(BaseDatafeed):
             for row in df.itertuples():
                 dt: datetime = row.Index[1].to_pydatetime() - adjustment
                 dt: datetime = dt.replace(tzinfo=CHINA_TZ)
+
+                if dt >= end:
+                    break
 
                 bar: BarData = BarData(
                     symbol=symbol,
